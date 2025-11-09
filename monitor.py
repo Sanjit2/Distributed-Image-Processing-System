@@ -1,7 +1,4 @@
-"""
-Monitor Service for Worker Health Tracking
-Can run on any VM - monitors worker heartbeats
-"""
+
 
 import json
 import time
@@ -20,9 +17,6 @@ logger = logging.getLogger(__name__)
 
 
 def monitor_heartbeats():
-    """
-    Monitor worker heartbeats from Kafka and update Redis
-    """
     # Configure Kafka consumer
     consumer_config = {
         'bootstrap.servers': config.KAFKA_BROKER,
@@ -92,9 +86,7 @@ def monitor_heartbeats():
 
 
 def check_worker_status():
-    """
-    Periodically check and display worker status from Redis
-    """
+    
     try:
         redis_client = redis.Redis(
             host=config.REDIS_HOST,

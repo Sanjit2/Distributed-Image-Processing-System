@@ -1,7 +1,3 @@
-"""
-Flask Master Application for Distributed Image Processing
-Runs on Sarang's VM (172.23.150.205)
-"""
 
 from flask import Flask, render_template, request, jsonify, send_file
 from werkzeug.utils import secure_filename
@@ -59,7 +55,6 @@ except Exception as e:
 
 
 def delivery_report(err, msg):
-    """Callback for Kafka message delivery reports"""
     if err is not None:
         logger.error(f'Message delivery failed: {err}')
     else:
@@ -67,9 +62,7 @@ def delivery_report(err, msg):
 
 
 def split_image_into_tiles(image_path, job_id):
-    """
-    Split image into tiles and return tile information
-    """
+    
     try:
         # Read image
         img = cv2.imread(str(image_path))
@@ -115,9 +108,7 @@ def split_image_into_tiles(image_path, job_id):
 
 
 def publish_tasks(job_id, tiles, transformation):
-    """
-    Publish tile processing tasks to Kafka
-    """
+   
     try:
         for tile in tiles:
             # Message key: job_id:tile_id:transformation
@@ -144,9 +135,7 @@ def publish_tasks(job_id, tiles, transformation):
 
 
 def reconstruct_image(job_id):
-    """
-    Reconstruct final image from processed tiles
-    """
+    
     try:
         # Get job metadata from Redis
         job_key = config.get_job_key(job_id)
@@ -230,9 +219,7 @@ def reconstruct_image(job_id):
 
 
 def consume_results():
-    """
-    Background thread to consume processed tiles from Kafka
-    """
+
     consumer_config = {
         'bootstrap.servers': config.KAFKA_BROKER,
         'group.id': 'master-consumer',
@@ -299,14 +286,9 @@ def consume_results():
         consumer.close()
 
 
-# Start results consumer in background thread
 consumer_thread = threading.Thread(target=consume_results, daemon=True)
 consumer_thread.start()
 
-
-# ========================================
-# FLASK ROUTES
-# ========================================
 
 @app.route('/')
 def index():
