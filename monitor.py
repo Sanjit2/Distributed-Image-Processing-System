@@ -28,13 +28,19 @@ def monitor_heartbeats():
     try:
         consumer = Consumer(consumer_config)
         
-        # Connect to Redis
-        redis_client = redis.Redis(
-            host=config.REDIS_HOST,
-            port=config.REDIS_PORT,
-            decode_responses=True
-        )
-        redis_client.ping()
+        # Wait for Redis to become available while Kafka is starting.
+        while True:
+            try:
+                redis_client = redis.Redis(
+                    host=config.REDIS_HOST,
+                    port=config.REDIS_PORT,
+                    decode_responses=True
+                )
+                redis_client.ping()
+                break
+            except Exception as e:
+                logger.warning(f"Redis unavailable ({e}); retrying in {config.DEPENDENCY_RETRY_SECONDS}s")
+                time.sleep(config.DEPENDENCY_RETRY_SECONDS)
         
         logger.info(f"✅ Monitor connected to Kafka and Redis")
         
@@ -88,11 +94,7 @@ def monitor_heartbeats():
 def check_worker_status():
     
     try:
-        redis_client = redis.Redis(
-            host=config.REDIS_HOST,
-            port=config.REDIS_PORT,
-            decode_responses=True
-        )
+        redis_client = redis.Redis(host=config.REDIS_HOST, port=config.REDIS_PORT, decode_responses=True)
         
         while True:
             time.sleep(10)  # Check every 10 seconds

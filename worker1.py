@@ -108,13 +108,19 @@ def process_tasks():
         consumer = Consumer(consumer_config)
         producer = Producer(producer_config)
         
-        # Connect to Redis
-        redis_client = redis.Redis(
-            host=config.REDIS_HOST,
-            port=config.REDIS_PORT,
-            decode_responses=True
-        )
-        redis_client.ping()
+        # Wait for Redis to become available while Kafka is starting.
+        while True:
+            try:
+                redis_client = redis.Redis(
+                    host=config.REDIS_HOST,
+                    port=config.REDIS_PORT,
+                    decode_responses=True
+                )
+                redis_client.ping()
+                break
+            except Exception as e:
+                logger.warning(f"Redis unavailable ({e}); retrying in {config.DEPENDENCY_RETRY_SECONDS}s")
+                time.sleep(config.DEPENDENCY_RETRY_SECONDS)
         
         logger.info(f"✅ Worker {WORKER_ID} connected to Kafka and Redis")
         

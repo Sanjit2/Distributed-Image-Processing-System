@@ -15,6 +15,7 @@ import redis
 import logging
 
 import config
+from storage import LocalStorage
 
 # Configure logging
 logging.basicConfig(
@@ -27,18 +28,26 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = config.MAX_FILE_SIZE
 
-# Initialize Redis client
-try:
-    redis_client = redis.Redis(
-        host=config.REDIS_HOST,
-        port=config.REDIS_PORT,
-        decode_responses=True
-    )
-    redis_client.ping()
-    logger.info(f"✅ Connected to Redis at {config.REDIS_HOST}:{config.REDIS_PORT}")
-except Exception as e:
-    logger.error(f"❌ Failed to connect to Redis: {e}")
-    raise
+storage = LocalStorage(config.UPLOAD_FOLDER, config.RESULTS_FOLDER, config.TEMP_TILES_FOLDER)
+
+
+def connect_redis():
+    while True:
+        try:
+            client = redis.Redis(
+                host=config.REDIS_HOST,
+                port=config.REDIS_PORT,
+                decode_responses=True
+            )
+            client.ping()
+            logger.info(f"Connected to Redis at {config.REDIS_HOST}:{config.REDIS_PORT}")
+            return client
+        except Exception as e:
+            logger.warning(f"Redis unavailable ({e}); retrying in {config.DEPENDENCY_RETRY_SECONDS}s")
+            time.sleep(config.DEPENDENCY_RETRY_SECONDS)
+
+
+redis_client = connect_redis()
 
 # Initialize Kafka Producer
 producer_config = {
@@ -161,11 +170,11 @@ def reconstruct_image(job_id):
             canvas = np.zeros((height, width, 3), dtype=np.uint8)
         
         # Load and place tiles
-        tile_folder = config.TEMP_TILES_FOLDER / job_id
+        tile_folder = storage.tile_folder(job_id)
         placed_tiles = 0
         
         for tile_id in range(total_tiles):
-            tile_path = tile_folder / f"tile_{tile_id}.jpg"
+            tile_path = storage.tile_path(job_id, tile_id)
             
             if not tile_path.exists():
                 logger.warning(f"Missing tile {tile_id} for job {job_id}")
@@ -197,7 +206,7 @@ def reconstruct_image(job_id):
         logger.info(f"Placed {placed_tiles}/{total_tiles} tiles")
         
         # Save result
-        result_path = config.RESULTS_FOLDER / f"{job_id}.jpg"
+        result_path = storage.result_path(job_id)
         cv2.imwrite(str(result_path), canvas, [cv2.IMWRITE_JPEG_QUALITY, config.JPEG_QUALITY])
         
         # Update job status
@@ -206,8 +215,7 @@ def reconstruct_image(job_id):
         logger.info(f"✅ Job {job_id} complete! Result saved to {result_path}")
         
         # Cleanup temp tiles
-        import shutil
-        shutil.rmtree(tile_folder, ignore_errors=True)
+        storage.cleanup_tiles(job_id)
         
         return result_path
         
@@ -256,10 +264,7 @@ def consume_results():
                 tile_data = msg.value()
                 
                 # Save tile to temp folder
-                tile_folder = config.TEMP_TILES_FOLDER / job_id
-                tile_folder.mkdir(exist_ok=True)
-                
-                tile_path = tile_folder / f"tile_{tile_id}.jpg"
+                tile_path = storage.tile_path(job_id, tile_id)
                 with open(tile_path, 'wb') as f:
                     f.write(tile_data)
                 
@@ -322,7 +327,7 @@ def upload():
         
         # Save uploaded file
         filename = secure_filename(file.filename)
-        upload_path = config.UPLOAD_FOLDER / f"{job_id}_{filename}"
+        upload_path = storage.upload_path(job_id, filename)
         file.save(upload_path)
         
         logger.info(f"📤 New job {job_id}: {filename} ({transformation})")
@@ -383,7 +388,7 @@ def status(job_id):
 def result(job_id):
     """Download processed image"""
     try:
-        result_path = config.RESULTS_FOLDER / f"{job_id}.jpg"
+        result_path = storage.result_path(job_id)
         
         if not result_path.exists():
             return jsonify({'error': 'Result not ready yet'}), 404
@@ -399,6 +404,17 @@ def result(job_id):
 def dashboard():
     """Worker monitoring dashboard"""
     return render_template('dashboard.html')
+
+
+@app.route('/health')
+def health():
+    try:
+        redis_client.ping()
+        producer.list_topics(timeout=2)
+        return jsonify({'status': 'ok', 'redis': 'ok', 'kafka': 'ok'})
+    except Exception as e:
+        logger.error(f"Health check failed: {e}")
+        return jsonify({'status': 'error', 'error': str(e)}), 503
 
 
 @app.route('/api/workers')
@@ -428,7 +444,7 @@ def api_workers():
 if __name__ == '__main__':
     logger.info("=" * 50)
     logger.info("🚀 Starting Master Application")
-    logger.info(f"📍 Master IP: {config.MASTER_IP}")
+    logger.info(f"📍 Master host: {config.MASTER_HOST}")
     logger.info(f"📡 Kafka Broker: {config.KAFKA_BROKER}")
     logger.info(f"💾 Redis: {config.REDIS_HOST}:{config.REDIS_PORT}")
     logger.info(f"🌐 Flask: http://{config.FLASK_HOST}:{config.FLASK_PORT}")

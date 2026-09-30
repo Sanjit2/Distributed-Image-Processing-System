@@ -1,18 +1,24 @@
 import os
-# Broker Configuration 
-BROKER_IP = os.getenv('BROKER_IP', '172.23.54.181')
-KAFKA_BROKER = f"{BROKER_IP}:9092"
+import pathlib
 
-# Master Configuration 
-MASTER_IP = os.getenv('MASTER_IP', '172.23.150.205')
 
-# Redis Configuration 
-REDIS_HOST = os.getenv('REDIS_HOST', '172.23.150.205')
+# Service endpoints are hostnames so the same code works on a laptop, in Compose,
+# and on separate EC2 instances.
+KAFKA_BROKER = os.getenv('KAFKA_BROKER', 'localhost:9092')
+
+# Master Configuration
+MASTER_HOST = os.getenv('MASTER_HOST', 'localhost')
+
+# Redis Configuration
+REDIS_HOST = os.getenv('REDIS_HOST', 'localhost')
 REDIS_PORT = int(os.getenv('REDIS_PORT', 6379))
+
+# Dependency retry settings
+DEPENDENCY_RETRY_SECONDS = float(os.getenv('DEPENDENCY_RETRY_SECONDS', 3))
 
 # Flask Configuration
 FLASK_HOST = '0.0.0.0'  
-FLASK_PORT = 5000
+FLASK_PORT = int(os.getenv('FLASK_PORT', 5000))
 FLASK_DEBUG = False
 
 # Kafka Topics
@@ -38,12 +44,11 @@ TRANSFORMATIONS = ['grayscale', 'blur']
 JPEG_QUALITY = 95
 
 
-import pathlib
-
 BASE_DIR = pathlib.Path(__file__).parent.absolute()
-UPLOAD_FOLDER = BASE_DIR / 'uploads'
-RESULTS_FOLDER = BASE_DIR / 'results'
-TEMP_TILES_FOLDER = BASE_DIR / 'temp_tiles'
+STORAGE_ROOT = pathlib.Path(os.getenv('STORAGE_ROOT', str(BASE_DIR)))
+UPLOAD_FOLDER = STORAGE_ROOT / 'uploads'
+RESULTS_FOLDER = STORAGE_ROOT / 'results'
+TEMP_TILES_FOLDER = STORAGE_ROOT / 'temp_tiles'
 
 # Create folders if they don't exist
 UPLOAD_FOLDER.mkdir(exist_ok=True)
