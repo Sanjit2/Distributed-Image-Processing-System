@@ -1,148 +1,543 @@
 # Distributed Image Processing System
 
-Flask master/API service that splits large images into tiles, Kafka workers that
-apply transformations in parallel, and Redis for job and worker state.
+A scalable, fault-tolerant distributed image-processing system that parallelizes image transformations across multiple worker processes using **Apache Kafka** for asynchronous task distribution and **Redis** for shared state management.
 
-## Architecture
+The system uses a **Master-Worker architecture** where the Master handles client requests and coordinates processing, while multiple workers process image tiles concurrently.
 
-```mermaid
-flowchart LR
-    Client[Client] --> Master[Master/API :5000]
-    Master -->|image_tasks| Kafka[(Kafka)]
-    Kafka --> W1[Worker]
-    Kafka --> W2[Worker]
-    Kafka --> WN[Worker ...]
-    W1 -->|image_results| Kafka
-    W2 -->|image_results| Kafka
-    WN -->|image_results| Kafka
-    Master --> Redis[(Redis)]
-    Workers --> Redis
-    Monitor[Monitor] --> Kafka
-    Monitor --> Redis
+---
+
+## 🚀 Features
+
+- Distributed image processing using parallel workers
+- Apache Kafka for asynchronous task distribution
+- Redis for shared job state management
+- Dockerized deployment using Docker Compose
+- Centralized Flask-based web interface
+- Automatic image tiling for large images
+- Parallel processing across multiple workers
+- Worker health monitoring using heartbeats
+- Fault-tolerant task execution
+- Support for Grayscale and Blur transformations
+- Google Cloud Compute Engine deployment
+
+---
+
+## 🛠️ Technology Stack
+
+| Category | Technology |
+|----------|------------|
+| Language | Python 3.10+ |
+| Web Framework | Flask |
+| Message Broker | Apache Kafka |
+| State Management | Redis |
+| Image Processing | OpenCV, NumPy, Pillow |
+| Containerization | Docker, Docker Compose |
+| Cloud Platform | Google Cloud Compute Engine |
+
+---
+
+# 🏗️ System Architecture
+
+The system follows a **Master-Worker architecture**.
+
+```text
+                         Client
+                           │
+                           ▼
+                  ┌─────────────────┐
+                  │   Flask Master  │
+                  │    Web / API    │
+                  └────────┬────────┘
+                           │
+                           ▼
+                  ┌─────────────────┐
+                  │      Kafka      │
+                  │   Task Broker   │
+                  └────────┬────────┘
+                           │
+                    Task Distribution
+                           │
+              ┌────────────┴────────────┐
+              │                         │
+              ▼                         ▼
+      ┌───────────────┐        ┌───────────────┐
+      │    Worker 1   │        │    Worker 2   │
+      │               │        │               │
+      │ OpenCV        │        │ OpenCV        │
+      │ Processing     │        │ Processing    │
+      └───────┬───────┘        └───────┬───────┘
+              │                         │
+              └────────────┬────────────┘
+                           │
+                           ▼
+                  ┌─────────────────┐
+                  │      Redis      │
+                  │   Shared State  │
+                  └────────┬────────┘
+                           │
+                           ▼
+                  ┌─────────────────┐
+                  │  Master / API   │
+                  │ Reconstructs    │
+                  │ Final Image     │
+                  └─────────────────┘
 ```
 
-The master validates and stores an upload, splits it into 512x512 JPEG tiles,
-and publishes the existing `image_tasks` messages with keys in the form
-`job_id:tile_id:transformation`. Workers consume from the shared
-`image_workers` group, process tiles with OpenCV, and publish JPEG results to
-`image_results` using `job_id:tile_id` keys. The master reconstructs the image
-after all tiles arrive. Worker heartbeats use `worker_heartbeats` and Redis TTLs.
+---
 
-## Local Setup
+# 🔄 How It Works
 
-Requirements: Docker Desktop with the Linux engine running, Docker Compose, and
-an image at least 1024x1024. No AWS account or credentials are needed.
+### 1. Image Upload
+
+The user uploads an image through the Flask web interface.
+
+### 2. Image Tiling
+
+For large images, the Master divides the image into smaller **512 × 512 tiles**.
+
+This allows different portions of the image to be processed independently.
+
+### 3. Task Distribution
+
+Each tile becomes a processing task.
+
+The Master publishes these tasks to **Apache Kafka**.
+
+### 4. Parallel Processing
+
+Multiple workers consume tasks from Kafka and process image tiles concurrently.
+
+Supported transformations include:
+
+- Grayscale
+- Blur
+
+Image processing is performed using OpenCV and related Python libraries.
+
+### 5. State Management
+
+**Redis** is used to maintain shared job and processing state.
+
+This allows the Master and workers to coordinate the progress of image-processing jobs.
+
+### 6. Result Reconstruction
+
+After all tiles have been processed, the Master collects the results and reconstructs the final image.
+
+### 7. Worker Monitoring
+
+Workers periodically send heartbeat information.
+
+The monitoring component uses these heartbeats to determine whether workers are alive and available.
+
+---
+
+# 📁 Project Structure
+
+```text
+.
+├── app.py
+├── worker.py
+├── monitor.py
+├── setup_kafka.py
+├── requirements.txt
+├── Dockerfile
+├── docker-compose.yml
+└── ...
+```
+
+### Main Components
+
+| Component | Responsibility |
+|-----------|----------------|
+| `app.py` | Flask web interface and API |
+| `worker.py` | Processes image-processing tasks |
+| `monitor.py` | Monitors worker health |
+| `setup_kafka.py` | Kafka/topic initialization |
+| `Dockerfile` | Container image configuration |
+| `docker-compose.yml` | Multi-service orchestration |
+
+---
+
+# ⚙️ Getting Started
+
+## Prerequisites
+
+Install the following:
+
+- Python 3.10+
+- Git
+- Docker
+- Docker Compose
+
+You do **not** need ZeroTier for the Docker-based deployment.
+
+---
+
+# 💻 Local Installation
+
+Clone the repository:
 
 ```bash
-docker compose up --build
+git clone <REPOSITORY_URL>
+cd bd_project
 ```
 
-Open <http://localhost:5000>. Compose starts Kafka in single-node KRaft mode,
-creates the three existing topics, starts Redis, the master, a monitor, and one
-worker. Kafka and Redis are reachable only on the internal Compose network.
+Build and start the application:
+
+```bash
+docker compose up -d --build
+```
+
+Check the running services:
+
+```bash
+docker compose ps
+```
+
+You should see the application services running, including:
+
+- Kafka
+- Redis
+- Master
+- Monitor
+- Workers
+
+---
+
+# ▶️ Running the Application
+
+After the containers have started, open:
+
+```text
+http://localhost:5000
+```
+
+This opens the image-processing web interface.
+
+---
+
+# 🖼️ Using the Application
+
+### Step 1 — Upload an Image
+
+Select an image from your computer through the web interface.
+
+For large images, the system automatically divides the image into smaller tiles.
+
+### Step 2 — Select a Transformation
+
+Choose one of the available transformations:
+
+- Grayscale
+- Blur
+
+### Step 3 — Start Processing
+
+Submit the image for processing.
+
+The Master creates the required processing tasks and publishes them to Kafka.
+
+### Step 4 — Distributed Processing
+
+Kafka distributes the tasks among the available workers.
+
+```text
+              Image
+                │
+                ▼
+          Master / Flask
+                │
+                ▼
+        Split into tiles
+                │
+                ▼
+             Kafka
+          ┌─────┴─────┐
+          ▼           ▼
+      Worker 1     Worker 2
+          │           │
+          └─────┬─────┘
+                ▼
+             Redis
+                │
+                ▼
+       Reconstruct image
+                │
+                ▼
+          Final Result
+```
+
+The workers process different image tiles concurrently.
+
+### Step 5 — Download the Result
+
+Once processing is complete, the reconstructed image can be downloaded through the application.
+
+---
+
+# 📊 Monitoring Dashboard
+
+The application provides a worker monitoring dashboard.
+
+Open:
+
+```text
+http://localhost:5000/dashboard
+```
+
+The dashboard can be used to check worker availability and processing information.
+
+Workers periodically send heartbeat signals to indicate that they are alive.
+
+---
+
+# ❤️ Health Check
+
+The application provides a health endpoint:
+
+```text
+http://localhost:5000/health
+```
+
+Example response:
+
+```json
+{
+  "kafka": "ok",
+  "redis": "ok",
+  "status": "ok"
+}
+```
+
+This endpoint can be used to verify that the application and its Kafka/Redis dependencies are available.
+
+---
+
+# 🔌 API Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/` | Opens the web interface |
+| `GET` | `/health` | Checks application, Kafka and Redis health |
+| `GET` | `/dashboard` | Displays worker monitoring information |
+| `POST` | `/upload` | Uploads an image for processing |
+| `GET` | `/status/<job_id>` | Checks the status of a processing job |
+| `GET` | `/result/<job_id>` | Retrieves the processed image |
+
+> Endpoint behavior may depend on the current application configuration.
+
+---
+
+# 🐳 Docker
+
+The application is containerized to provide a reproducible deployment environment.
+
+Start the complete system:
+
+```bash
+docker compose up -d --build
+```
+
+Check containers:
+
+```bash
+docker compose ps
+```
+
+View Master logs:
+
+```bash
+docker compose logs -f master
+```
+
+View Worker logs:
+
+```bash
+docker compose logs -f worker
+```
+
+Stop the application:
 
 ```bash
 docker compose down
-docker compose down -v  # also remove the local master data volume
 ```
 
-## Environment Variables
-
-`.env.example` contains placeholders and local Compose values. Copy it to
-`.env` only when you need overrides; `.env` is ignored by git.
-
-| Variable | Default outside Compose | Purpose |
-|---|---|---|
-| `KAFKA_BROKER` | `localhost:9092` | Kafka bootstrap address |
-| `REDIS_HOST` | `localhost` | Redis hostname |
-| `REDIS_PORT` | `6379` | Redis port |
-| `FLASK_PORT` | `5000` | Master HTTP port |
-| `STORAGE_ROOT` | repository directory | Local upload/result/tile root |
-| `DEPENDENCY_RETRY_SECONDS` | `3` | Retry delay while Redis is starting |
-
-Compose overrides `KAFKA_BROKER` to `kafka:9092`, `REDIS_HOST` to `redis`, and
-`STORAGE_ROOT` to `/data`. Use service names inside containers, not `localhost`.
-
-## API Usage
-
-The web UI is available at `/`. The same flow can be called directly:
+To remove containers, networks, and associated Compose resources:
 
 ```bash
-curl -F "file=@sample.jpg" -F "transformation=grayscale" http://localhost:5000/upload
-curl http://localhost:5000/status/<job_id>
-curl -o result.jpg http://localhost:5000/result/<job_id>
-curl http://localhost:5000/health
+docker compose down -v
 ```
 
-Supported transformations are `grayscale` and `blur`. The dashboard is at
-`/dashboard`.
+---
 
-## Scaling Workers Locally
+# ☁️ Google Cloud Deployment
 
-Workers use one shared Kafka consumer group, so each tile is assigned to one
-worker. Start more worker containers with:
+The system was deployed on **Google Cloud Compute Engine** using Docker Compose.
+
+The cloud deployment runs the distributed components as containerized services on a Compute Engine VM.
+
+```text
+              Google Cloud
+          Compute Engine VM
+                  │
+       ┌──────────┼──────────┐
+       │          │          │
+       ▼          ▼          ▼
+    Flask       Kafka      Redis
+    Master
+       │
+       ▼
+   ┌─────────┐
+   │ Workers │
+   │         │
+   │ Worker 1│
+   │ Worker 2│
+   └─────────┘
+```
+
+### Cloud Deployment Stack
+
+- Google Cloud Compute Engine
+- Ubuntu
+- Docker
+- Docker Compose
+- Apache Kafka
+- Redis
+- Flask
+- Multiple worker containers
+
+The application is exposed through the Flask service, while Kafka and Redis remain internal to the deployment.
+
+---
+
+# 📸 Deployment Screenshots
+
+## Google Cloud Compute Engine
+
+The application was deployed on a Google Cloud Compute Engine VM.
+
+![Google Cloud VM](screenshots/gcp-vm.png)
+
+---
+
+## Docker Services
+
+The distributed services run as Docker containers.
+
+![Docker Services](screenshots/docker-compose.png)
+
+---
+
+## Image Processing
+
+Example of the application processing an image.
+
+![Image Processing](screenshots/image-processing.png)
+
+---
+
+## Worker Monitoring
+
+The dashboard provides visibility into worker health and processing status.
+
+![Worker Dashboard](screenshots/dashboard.png)
+
+---
+
+# 🔍 Fault Tolerance & Monitoring
+
+The system is designed to improve reliability through distributed processing and worker monitoring.
+
+### Worker Heartbeats
+
+Workers periodically send heartbeat information to indicate that they are active.
+
+### Distributed Processing
+
+Image-processing tasks are distributed through Kafka rather than being processed entirely by a single worker.
+
+### Shared State
+
+Redis provides shared state management for tracking processing jobs and their progress.
+
+### Tile Processing
+
+Large images are divided into smaller tiles so that processing can be distributed across multiple workers.
+
+### Cleanup
+
+Temporary image tiles are cleaned up after successful processing.
+
+---
+
+# 🧪 Example Workflow
+
+A typical processing workflow looks like:
+
+```text
+1. User uploads image
+          │
+          ▼
+2. Flask receives request
+          │
+          ▼
+3. Image is divided into tiles
+          │
+          ▼
+4. Tasks published to Kafka
+          │
+          ▼
+5. Workers consume tasks
+          │
+          ▼
+6. Workers apply transformation
+          │
+          ▼
+7. Results stored/tracked
+          │
+          ▼
+8. Master collects results
+          │
+          ▼
+9. Image reconstructed
+          │
+          ▼
+10. User downloads result
+```
+
+---
+
+# 🛑 Stopping the System
+
+To stop the application:
 
 ```bash
-docker compose up --build --scale worker=3
+docker compose down
 ```
 
-Each replica uses its Compose hostname as its worker ID. The `image_tasks`
-topic currently has two partitions, so more than two active consumers will not
-increase task parallelism until the topic is recreated with more partitions.
+To stop and remove the Compose volumes:
 
-## Failure Handling
+```bash
+docker compose down -v
+```
 
-- Master and workers retry Redis connections while dependencies start.
-- Kafka clients continue polling through transient broker errors; Compose also
-  restarts workers and the monitor if their process exits.
-- With current auto-commit behavior, a worker stopped after a commit can lose a
-  task. Stronger at-least-once processing is a later improvement.
-- Stopping one worker leaves remaining workers consuming from the shared group.
-- Redis and Kafka remain internal and are not published to the host.
+---
 
-## AWS DEPLOYMENT
+# 👥 Development
 
-The same Docker image can later run on EC2 without changing the application.
-This phase does not provision AWS resources.
+The project was originally developed as a distributed multi-node system with separate broker, master, and worker nodes.
 
-### EC2 preparation
+The current Docker-based deployment packages these distributed components into reproducible containerized services and was deployed on Google Cloud Compute Engine.
 
-1. Create private VPC/subnet placement and install Docker Engine and the Compose
-   plugin on the EC2 host(s).
-2. Copy the repository to the master host, or build/push the image to a private
-   registry and pull it on the host.
-3. Supply environment variables for private Kafka and Redis DNS names or
-   private IPs. Never put credentials in source, `.env.example`, or an image.
-4. Run `docker compose up -d` after adapting deployment environment values and
-   service placement.
+---
 
-### Network and service placement
+# 📌 Notes
 
-- Allow TCP `5000` only from intended clients or a load balancer.
-- Allow Kafka `9092` and Redis `6379` only between master, workers, monitor,
-  and private data hosts. Never expose either service publicly.
-- A first deployment can keep all services on one EC2 instance. Later, workers
-  can run on separate instances with the same image and private
-  `KAFKA_BROKER`/`REDIS_HOST` values.
-- If Kafka or Redis becomes AWS-managed, use its private endpoint and add the
-  provider's required TLS/authentication client settings.
-
-### Storage migration
-
-Local Compose stores uploads, results, and temporary tiles under the persistent
-`master-data` volume. `storage.py` is the storage boundary. An S3 implementation
-can replace `LocalStorage` for durable uploads/results without changing Kafka
-keys or worker processing. Use an EC2 role or a secret manager for AWS access;
-do not commit access keys.
-
-## Current Local vs Future AWS-Managed Components
-
-| Component | Current local setup | Possible AWS setup later |
-|---|---|---|
-| Master/API and workers | Docker Compose containers | EC2 containers, workers on separate instances |
-| Kafka | Apache Kafka single-node KRaft container | Private Kafka cluster or Amazon MSK |
-| Redis | Redis container | ElastiCache for Redis or private Redis host |
-| Image storage | Persistent Docker volume | S3 through the storage adapter |
-| Monitoring | `monitor.py` and Docker logs | CloudWatch/log aggregation |
-
-Existing topic names and Kafka message formats are preserved.
+- Large images are automatically divided into smaller tiles.
+- Workers process tiles concurrently.
+- Kafka handles asynchronous task distribution.
+- Redis manages shared processing state.
+- Worker heartbeats are used for health monitoring.
+- Docker Compose manages the distributed services.
+- The cloud deployment uses Google Cloud Compute Engine.
