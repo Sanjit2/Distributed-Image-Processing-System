@@ -437,11 +437,11 @@ Example of the application processing an image.
 
 ---
 
-## Worker Monitoring
+### Parallel Worker Execution
 
-The dashboard provides visibility into worker health and processing status.
+Multiple worker containers consume and process image tiles concurrently through Kafka.
 
-![Worker Dashboard](screenshots/dashboard.png)
+![Parallel Worker Execution](screenshots/worker-logs.png)
 
 ---
 
