@@ -11,11 +11,12 @@ The system uses a **Master-Worker architecture** where the Master handles client
 - Distributed image processing using parallel workers
 - Apache Kafka for asynchronous task distribution
 - Redis for shared job state management
+- Content-based result caching for repeated images
 - Dockerized deployment using Docker Compose
 - Centralized Flask-based web interface
 - Automatic image tiling for large images
 - Parallel processing across multiple workers
-- Worker health monitoring using heartbeats
+- Worker health monitoring using Redis TTL heartbeats
 - Fault-tolerant task execution
 - Support for Grayscale and Blur transformations
 - Google Cloud Compute Engine deployment
@@ -37,6 +38,10 @@ The system uses a **Master-Worker architecture** where the Master handles client
 ---
 
 # 🏗️ System Architecture
+
+For the complete implemented architecture, communication contracts, message
+formats, sequence diagrams, and deployment topology, see
+[ARCHITECTURE.md](./ARCHITECTURE.md).
 
 The system follows a **Master-Worker architecture**.
 
@@ -126,9 +131,8 @@ After all tiles have been processed, the Master collects the results and reconst
 
 ### 7. Worker Monitoring
 
-Workers periodically send heartbeat information.
-
-The monitoring component uses these heartbeats to determine whether workers are alive and available.
+Workers periodically refresh their own Redis liveness keys. The dashboard
+determines whether workers are alive from those keys' TTLs.
 
 ---
 
@@ -138,7 +142,6 @@ The monitoring component uses these heartbeats to determine whether workers are 
 .
 ├── app.py
 ├── worker.py
-├── monitor.py
 ├── setup_kafka.py
 ├── requirements.txt
 ├── Dockerfile
@@ -152,7 +155,6 @@ The monitoring component uses these heartbeats to determine whether workers are 
 |-----------|----------------|
 | `app.py` | Flask web interface and API |
 | `worker.py` | Processes image-processing tasks |
-| `monitor.py` | Monitors worker health |
 | `setup_kafka.py` | Kafka/topic initialization |
 | `Dockerfile` | Container image configuration |
 | `docker-compose.yml` | Multi-service orchestration |
@@ -200,7 +202,6 @@ You should see the application services running, including:
 - Kafka
 - Redis
 - Master
-- Monitor
 - Workers
 
 ---
@@ -288,7 +289,16 @@ http://localhost:5000/dashboard
 
 The dashboard can be used to check worker availability and processing information.
 
-Workers periodically send heartbeat signals to indicate that they are alive.
+Workers periodically refresh `worker:<worker_id>` keys in Redis with a
+15-second TTL. The dashboard uses those keys to show active workers.
+
+### 8. Result Caching
+
+Completed results are cached on the master's persistent storage using a
+SHA-256 hash of the uploaded file and the selected transformation. When the
+same image is uploaded again with the same transformation, the master creates
+a completed job immediately without publishing tile tasks to Kafka. Grayscale
+and blur results are cached separately.
 
 ---
 
@@ -451,7 +461,9 @@ The system is designed to improve reliability through distributed processing and
 
 ### Worker Heartbeats
 
-Workers periodically send heartbeat information to indicate that they are active.
+Workers periodically refresh their own `worker:<worker_id>` Redis keys directly.
+If a worker stops, its key expires after 15 seconds and it disappears from the
+dashboard. Heartbeats are not sent through Kafka.
 
 ### Distributed Processing
 
@@ -538,6 +550,6 @@ The current Docker-based deployment packages these distributed components into r
 - Workers process tiles concurrently.
 - Kafka handles asynchronous task distribution.
 - Redis manages shared processing state.
-- Worker heartbeats are used for health monitoring.
+- Workers refresh Redis TTL heartbeats directly for health monitoring.
 - Docker Compose manages the distributed services.
 - The cloud deployment uses Google Cloud Compute Engine.

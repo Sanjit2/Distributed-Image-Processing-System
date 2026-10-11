@@ -4,7 +4,6 @@ import cv2
 import numpy as np
 import time
 import threading
-import json
 import logging
 from confluent_kafka import Consumer, Producer, KafkaError
 import redis
@@ -51,29 +50,14 @@ def apply_transformation(image, transformation):
         return image
 
 
-def send_heartbeat(producer, redis_client):
+def send_heartbeat(redis_client):
     """
-    Background thread to send heartbeat signals
+    Background thread to refresh this worker's Redis liveness key.
     """
     logger.info(f"💓 Heartbeat thread started for worker {WORKER_ID}")
     
     while True:
         try:
-            # Send heartbeat to Kafka
-            heartbeat_data = {
-                'worker_id': WORKER_ID,
-                'status': 'alive',
-                'timestamp': time.time()
-            }
-            
-            producer.produce(
-                config.HEARTBEAT_TOPIC,
-                key=WORKER_ID.encode('utf-8'),
-                value=json.dumps(heartbeat_data).encode('utf-8')
-            )
-            producer.poll(0)
-            
-            # Update Redis with worker status (with TTL)
             worker_key = config.get_worker_key(WORKER_ID)
             redis_client.setex(worker_key, config.WORKER_TIMEOUT, 'alive')
             
@@ -133,7 +117,7 @@ def process_tasks():
         # Start heartbeat thread
         heartbeat_thread = threading.Thread(
             target=send_heartbeat,
-            args=(producer, redis_client),
+            args=(redis_client,),
             daemon=True
         )
         heartbeat_thread.start()

@@ -25,11 +25,6 @@ def create_topics():
             config.RESULTS_TOPIC,
             num_partitions=1,
             replication_factor=1
-        ),
-        NewTopic(
-            config.HEARTBEAT_TOPIC,
-            num_partitions=1,
-            replication_factor=1
         )
     ]
     

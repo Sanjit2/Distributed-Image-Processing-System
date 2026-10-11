@@ -74,19 +74,5 @@ services:
         condition: service_healthy
     restart: on-failure
 
-  monitor:
-    build: .
-    command: ["python", "monitor.py"]
-    environment:
-      KAFKA_BROKER: kafka:9092
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
-    depends_on:
-      kafka-init:
-        condition: service_completed_successfully
-      redis:
-        condition: service_healthy
-    restart: on-failure
-
 volumes:
   master-data:

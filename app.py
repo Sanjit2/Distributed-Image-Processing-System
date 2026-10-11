@@ -5,6 +5,8 @@ import cv2
 import numpy as np
 from PIL import Image
 import io
+import hashlib
+import shutil
 import uuid
 import json
 import time
@@ -28,7 +30,12 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = config.MAX_FILE_SIZE
 
-storage = LocalStorage(config.UPLOAD_FOLDER, config.RESULTS_FOLDER, config.TEMP_TILES_FOLDER)
+storage = LocalStorage(
+    config.UPLOAD_FOLDER,
+    config.RESULTS_FOLDER,
+    config.TEMP_TILES_FOLDER,
+    config.CACHE_FOLDER
+)
 
 
 def connect_redis():
@@ -114,6 +121,33 @@ def split_image_into_tiles(image_path, job_id):
     except Exception as e:
         logger.error(f"Error splitting image: {e}")
         raise
+
+
+def get_file_hash(file_path):
+    """Return a stable content hash for an uploaded file."""
+    digest = hashlib.sha256()
+    with open(file_path, 'rb') as image_file:
+        for chunk in iter(lambda: image_file.read(1024 * 1024), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def get_total_tiles(image_path):
+    """Validate an image and calculate its tile count without encoding tiles."""
+    image = cv2.imread(str(image_path))
+    if image is None:
+        raise ValueError("Could not read image")
+
+    height, width = image.shape[:2]
+    if width < config.MIN_IMAGE_SIZE or height < config.MIN_IMAGE_SIZE:
+        raise ValueError(
+            f"Image too small. Minimum size: "
+            f"{config.MIN_IMAGE_SIZE}x{config.MIN_IMAGE_SIZE}"
+        )
+
+    tiles_per_row = (width + config.TILE_SIZE - 1) // config.TILE_SIZE
+    tiles_per_column = (height + config.TILE_SIZE - 1) // config.TILE_SIZE
+    return tiles_per_row * tiles_per_column, width, height
 
 
 def publish_tasks(job_id, tiles, transformation):
@@ -208,6 +242,7 @@ def reconstruct_image(job_id):
         # Save result
         result_path = storage.result_path(job_id)
         cv2.imwrite(str(result_path), canvas, [cv2.IMWRITE_JPEG_QUALITY, config.JPEG_QUALITY])
+        storage.store_cached_result(result_path, job_data['cache_key'])
         
         # Update job status
         redis_client.hset(job_key, 'status', 'complete')
@@ -329,9 +364,38 @@ def upload():
         filename = secure_filename(file.filename)
         upload_path = storage.upload_path(job_id, filename)
         file.save(upload_path)
+        image_hash = get_file_hash(upload_path)
+        cache_key = f'{image_hash}_{transformation}'
+        cached_result_path = storage.cache_path(cache_key)
         
         logger.info(f"📤 New job {job_id}: {filename} ({transformation})")
         
+        if cached_result_path.exists():
+            total_tiles, img_width, img_height = get_total_tiles(upload_path)
+            cached_image = cv2.imread(str(cached_result_path))
+            if cached_image is not None:
+                shutil.copyfile(cached_result_path, storage.result_path(job_id))
+                redis_client.hset(config.get_job_key(job_id), mapping={
+                    'status': 'complete',
+                    'transformation': transformation,
+                    'total_tiles': total_tiles,
+                    'processed_count': total_tiles,
+                    'img_width': img_width,
+                    'img_height': img_height,
+                    'filename': filename,
+                    'cache_key': cache_key
+                })
+                logger.info(f"⚡ Cache hit for {filename} ({transformation})")
+                return jsonify({
+                    'success': True,
+                    'job_id': job_id,
+                    'total_tiles': total_tiles,
+                    'cached': True
+                })
+
+            logger.warning(f"Ignoring invalid cached result {cached_result_path}")
+            cached_result_path.unlink()
+
         # Split image into tiles
         tiles, img_width, img_height = split_image_into_tiles(upload_path, job_id)
         
@@ -344,7 +408,8 @@ def upload():
             'processed_count': 0,
             'img_width': img_width,
             'img_height': img_height,
-            'filename': filename
+            'filename': filename,
+            'cache_key': cache_key
         })
         
         # Publish tasks to Kafka
@@ -353,7 +418,8 @@ def upload():
         return jsonify({
             'success': True,
             'job_id': job_id,
-            'total_tiles': len(tiles)
+            'total_tiles': len(tiles),
+            'cached': False
         })
         
     except Exception as e:

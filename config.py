@@ -24,7 +24,6 @@ FLASK_DEBUG = False
 # Kafka Topics
 TASKS_TOPIC = 'image_tasks'
 RESULTS_TOPIC = 'image_results'
-HEARTBEAT_TOPIC = 'worker_heartbeats'
 
 # Kafka Consumer Group
 CONSUMER_GROUP = 'image_workers'
@@ -49,10 +48,12 @@ STORAGE_ROOT = pathlib.Path(os.getenv('STORAGE_ROOT', str(BASE_DIR)))
 UPLOAD_FOLDER = STORAGE_ROOT / 'uploads'
 RESULTS_FOLDER = STORAGE_ROOT / 'results'
 TEMP_TILES_FOLDER = STORAGE_ROOT / 'temp_tiles'
+CACHE_FOLDER = STORAGE_ROOT / 'cache'
 
 # Create folders if they don't exist
 UPLOAD_FOLDER.mkdir(exist_ok=True)
 RESULTS_FOLDER.mkdir(exist_ok=True)
+CACHE_FOLDER.mkdir(exist_ok=True)
 TEMP_TILES_FOLDER.mkdir(exist_ok=True)
 
 # Maximum file size (50MB)
