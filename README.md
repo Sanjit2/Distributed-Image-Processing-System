@@ -294,11 +294,10 @@ Workers periodically refresh `worker:<worker_id>` keys in Redis with a
 
 ### 8. Result Caching
 
-Completed results are cached on the master's persistent storage using a
-SHA-256 hash of the uploaded file and the selected transformation. When the
-same image is uploaded again with the same transformation, the master creates
-a completed job immediately without publishing tile tasks to Kafka. Grayscale
-and blur results are cached separately.
+Completed results are cached in Redis using a SHA-256 hash of the uploaded file
+and the selected transformation. When the same image is uploaded again with the
+same transformation, the master creates a completed job immediately without
+publishing tile tasks to Kafka. Grayscale and blur results are cached separately.
 
 ---
 

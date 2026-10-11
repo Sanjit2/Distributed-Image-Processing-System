@@ -48,12 +48,10 @@ STORAGE_ROOT = pathlib.Path(os.getenv('STORAGE_ROOT', str(BASE_DIR)))
 UPLOAD_FOLDER = STORAGE_ROOT / 'uploads'
 RESULTS_FOLDER = STORAGE_ROOT / 'results'
 TEMP_TILES_FOLDER = STORAGE_ROOT / 'temp_tiles'
-CACHE_FOLDER = STORAGE_ROOT / 'cache'
 
 # Create folders if they don't exist
 UPLOAD_FOLDER.mkdir(exist_ok=True)
 RESULTS_FOLDER.mkdir(exist_ok=True)
-CACHE_FOLDER.mkdir(exist_ok=True)
 TEMP_TILES_FOLDER.mkdir(exist_ok=True)
 
 # Maximum file size (50MB)
@@ -75,6 +73,10 @@ def get_job_key(job_id):
 def get_worker_key(worker_id):
     """Get Redis key for worker status"""
     return f"worker:{worker_id}"
+
+def get_cache_key(cache_key):
+    """Get Redis key for a cached result"""
+    return f"cache:{cache_key}"
 
 def allowed_file(filename):
     """Check if file extension is allowed"""

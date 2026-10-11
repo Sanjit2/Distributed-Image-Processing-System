@@ -6,7 +6,6 @@ import numpy as np
 from PIL import Image
 import io
 import hashlib
-import shutil
 import uuid
 import json
 import time
@@ -33,8 +32,7 @@ app.config['MAX_CONTENT_LENGTH'] = config.MAX_FILE_SIZE
 storage = LocalStorage(
     config.UPLOAD_FOLDER,
     config.RESULTS_FOLDER,
-    config.TEMP_TILES_FOLDER,
-    config.CACHE_FOLDER
+    config.TEMP_TILES_FOLDER
 )
 
 
@@ -55,6 +53,11 @@ def connect_redis():
 
 
 redis_client = connect_redis()
+cache_client = redis.Redis(
+    host=config.REDIS_HOST,
+    port=config.REDIS_PORT,
+    decode_responses=False
+)
 
 # Initialize Kafka Producer
 producer_config = {
@@ -242,7 +245,11 @@ def reconstruct_image(job_id):
         # Save result
         result_path = storage.result_path(job_id)
         cv2.imwrite(str(result_path), canvas, [cv2.IMWRITE_JPEG_QUALITY, config.JPEG_QUALITY])
-        storage.store_cached_result(result_path, job_data['cache_key'])
+        with open(result_path, 'rb') as result_file:
+            cache_client.set(
+                config.get_cache_key(job_data['cache_key']),
+                result_file.read()
+            )
         
         # Update job status
         redis_client.hset(job_key, 'status', 'complete')
@@ -366,15 +373,19 @@ def upload():
         file.save(upload_path)
         image_hash = get_file_hash(upload_path)
         cache_key = f'{image_hash}_{transformation}'
-        cached_result_path = storage.cache_path(cache_key)
+        cached_result = cache_client.get(config.get_cache_key(cache_key))
         
         logger.info(f"📤 New job {job_id}: {filename} ({transformation})")
         
-        if cached_result_path.exists():
+        if cached_result is not None:
             total_tiles, img_width, img_height = get_total_tiles(upload_path)
-            cached_image = cv2.imread(str(cached_result_path))
+            cached_image = cv2.imdecode(
+                np.frombuffer(cached_result, dtype=np.uint8),
+                cv2.IMREAD_COLOR
+            )
             if cached_image is not None:
-                shutil.copyfile(cached_result_path, storage.result_path(job_id))
+                with open(storage.result_path(job_id), 'wb') as result_file:
+                    result_file.write(cached_result)
                 redis_client.hset(config.get_job_key(job_id), mapping={
                     'status': 'complete',
                     'transformation': transformation,
@@ -393,8 +404,8 @@ def upload():
                     'cached': True
                 })
 
-            logger.warning(f"Ignoring invalid cached result {cached_result_path}")
-            cached_result_path.unlink()
+            logger.warning(f"Ignoring invalid Redis cache entry for {cache_key}")
+            cache_client.delete(config.get_cache_key(cache_key))
 
         # Split image into tiles
         tiles, img_width, img_height = split_image_into_tiles(upload_path, job_id)

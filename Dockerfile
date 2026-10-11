@@ -12,7 +12,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
-RUN mkdir -p /data/uploads /data/results /data/temp_tiles /data/cache
+RUN mkdir -p /data/uploads /data/results /data/temp_tiles
 ENV STORAGE_ROOT=/data
 
 CMD ["python", "app.py"]

@@ -1,8 +1,12 @@
 # Distributed Image Processing System Architecture
 
-This document describes the architecture that is implemented in this repository,
-including how the services communicate during startup, image processing, result
-collection, and worker monitoring.
+To run:
+docker compose up -d --build --scale worker=2
+
+
+This document describes the complete architecture implemented in this repository,
+including service communication, deployment, image processing, caching, HTTP APIs,
+worker monitoring, and the important functions in each source file.
 
 ## 1. Architectural summary
 
@@ -15,7 +19,7 @@ The system uses a master-worker architecture:
   results.
 - **Redis** is the shared state store for job metadata, progress counters, and
   worker liveness keys.
-- **The master cache** stores completed results by image content and
+- **Redis** also stores completed result bytes by image content and
   transformation so repeated requests can skip processing.
 - **Workers** consume tile tasks from Kafka, apply a transformation with OpenCV,
   publish the processed tile, and periodically refresh their own liveness keys
@@ -36,7 +40,7 @@ flowchart LR
     Redis["Redis<br/>redis:6379"]
     Init["Kafka-init<br/>setup_kafka.py"]
     W1["Worker containers<br/>worker1.py"]
-    Storage[("Master named volume<br/>/data<br/>uploads, results, cache")]
+    Storage[("Master named volume<br/>/data<br/>uploads, results, temp tiles")]
 
     Client -->|"HTTP 5000<br/>upload, status, result, dashboard"| Master
     Master -->|"produce image_tasks<br/>tile JPEG bytes"| Kafka
@@ -47,7 +51,7 @@ flowchart LR
     Master <-->|"job:* hashes<br/>metadata and progress"| Redis
     W1 -->|"worker:* TTL keys<br/>direct liveness updates"| Redis
     Master -->|"upload, temp tiles,<br/>final JPEG"| Storage
-    Master -->|"reuse cached result"| Storage
+    Master -->|"read/write cached JPEG bytes"| Redis
 
     Init -->|"create topics"| Kafka
 ```
@@ -169,10 +173,14 @@ sequenceDiagram
 1. `POST /upload` accepts an image and either `grayscale` or `blur`.
 2. The master generates a UUID job ID and saves the original file under
    `uploads/<job_id>_<filename>`.
-3. OpenCV reads the image. Images must be at least `1024 x 1024`; tiles are
+3. The master hashes the uploaded bytes with SHA-256 and combines the hash with
+   the selected transformation to create a cache key.
+4. If a valid cached result exists, the master copies it to the new job's result
+   path, marks the job complete in Redis, and does not publish Kafka tasks.
+5. For a cache miss, OpenCV reads the image. Images must be at least `1024 x 1024`; tiles are
    normally `512 x 512`, with smaller edge tiles when dimensions are not exact
    multiples of 512.
-4. The master stores this Redis hash:
+6. The master stores this Redis hash:
 
    ```text
    job:<job_id>
@@ -185,16 +193,45 @@ sequenceDiagram
      filename=<original filename>
    ```
 
-5. The master publishes tile JPEG bytes to `image_tasks`.
-6. A worker consumes the task, decodes the JPEG, applies the selected
+7. The master publishes tile JPEG bytes to `image_tasks`.
+8. A worker consumes the task, decodes the JPEG, applies the selected
    transformation, re-encodes it as JPEG, and publishes it to `image_results`.
-7. The master consumes the result, writes it to
+9. The master consumes the result, writes it to
    `temp_tiles/<job_id>/tile_<tile_id>.jpg`, and atomically increments
    `processed_count`.
-8. Once all results are present, the master calculates each tile’s row and
+10. Once all results are present, the master calculates each tile’s row and
    column from `tile_id`, places the tiles on a full-size canvas, writes
-   `results/<job_id>.jpg`, marks the job complete, and removes temporary tiles.
-9. The browser polls `/status/<job_id>` and then downloads `/result/<job_id>`.
+   `results/<job_id>.jpg`, stores a copy in the persistent cache, marks the job
+   complete, and removes temporary tiles.
+11. The browser polls `/status/<job_id>` and then downloads `/result/<job_id>`.
+
+### Cache decision flow
+
+```mermaid
+flowchart TD
+    Upload["POST /upload<br/>image + transformation"]
+    Save["Save upload to<br/>uploads/<job_id>_<filename>"]
+    Hash["SHA-256(file bytes)<br/>+ transformation"]
+    Exists{"Cached result<br/>exists and is readable?"}
+    Hit["Copy cached JPEG<br/>to results/<job_id>.jpg"]
+    Complete["Create Redis job hash<br/>status=complete"]
+    Split["Validate dimensions<br/>and split into tiles"]
+    Processing["Publish tile tasks to Kafka"]
+    Reconstruct["Collect result tiles<br/>and reconstruct image"]
+    Store["Store completed JPEG<br/>in cache"]
+
+    Upload --> Save --> Hash --> Exists
+    Exists -->|Yes| Hit --> Complete
+    Exists -->|No| Split --> Processing --> Reconstruct --> Store --> Complete
+```
+
+The cache is content-based, not filename-based. Uploading the same bytes with
+the same transformation reuses the result, while changing the transformation
+creates a separate Redis cache entry named
+`cache:<sha256>_<transformation>`. Redis stores the JPEG bytes directly; the
+master only writes a per-job copy to its results directory for `/result/<job_id>`.
+Cache retention therefore follows Redis persistence and eviction settings rather
+than the `master-data` Docker volume.
 
 ## 6. HTTP API communication
 
@@ -210,6 +247,113 @@ sequenceDiagram
 
 The upload page polls `/status/<job_id>` every second while processing.
 The dashboard polls `/api/workers` every three seconds.
+
+### API details
+
+#### `GET /`
+
+Returns the main upload page from `templates/index.html`. The page contains:
+
+- the image upload form;
+- grayscale and blur transformation choices;
+- processing progress and result display;
+- cache-hit messaging; and
+- the worker dashboard panel, which polls `/api/workers`.
+
+#### `POST /upload`
+
+Accepts a multipart form request:
+
+| Field | Required | Description |
+|---|---:|---|
+| `file` | Yes | PNG, JPG, JPEG, BMP, or TIFF image |
+| `transformation` | No | `grayscale` or `blur`; defaults to `grayscale` |
+
+Processing performed by the route:
+
+1. Confirms that a file exists and has a filename.
+2. Validates the extension using `config.allowed_file()`.
+3. Validates the transformation.
+4. Creates a UUID job ID and saves the upload.
+5. Calculates the SHA-256 cache key.
+6. On a cache hit, creates a completed Redis job without Kafka work.
+7. On a cache miss, splits the image, stores Redis metadata, and publishes tasks.
+
+Successful response:
+
+```json
+{
+  "success": true,
+  "job_id": "uuid",
+  "total_tiles": 4,
+  "cached": false
+}
+```
+
+For a cache hit, `cached` is `true`. Common error responses use HTTP `400` for
+invalid input and HTTP `500` for unexpected server failures.
+
+#### `GET /status/<job_id>`
+
+Reads the Redis hash `job:<job_id>` and returns the current state:
+
+```json
+{
+  "job_id": "uuid",
+  "status": "processing",
+  "total_tiles": 4,
+  "processed_count": 2,
+  "transformation": "grayscale"
+}
+```
+
+The browser polls this endpoint every second. A missing job returns HTTP `404`.
+The status becomes `complete` when all result tiles have been reconstructed, or
+`error` if reconstruction fails.
+
+#### `GET /result/<job_id>`
+
+Serves `results/<job_id>.jpg` as an image/jpeg response. It returns HTTP `404`
+with `Result not ready yet` until the result file exists.
+
+#### `GET /dashboard`
+
+Returns the standalone worker dashboard from `templates/dashboard.html`. The
+dashboard displays active worker count and worker TTL values. The home page also
+contains an inline version of this dashboard layout.
+
+#### `GET /api/workers`
+
+Scans Redis keys matching `worker:*`. For each key with a positive TTL, it
+returns:
+
+```json
+{
+  "workers": [
+    {
+      "worker_id": "worker-example",
+      "status": "alive",
+      "ttl": 12
+    }
+  ]
+}
+```
+
+Workers disappear automatically after their Redis key expires.
+
+#### `GET /health`
+
+Checks Redis with `PING` and Kafka with `list_topics()`. A healthy response is:
+
+```json
+{
+  "status": "ok",
+  "redis": "ok",
+  "kafka": "ok"
+}
+```
+
+Dependency failures return HTTP `503`.
 
 ## 7. Worker liveness flow
 
@@ -513,3 +657,185 @@ The selected transformation is then applied:
 The transformed tile is JPEG-encoded with quality `95` using
 `cv2.imencode('.jpg', ...)`, published to `image_results`, decoded again by the
 master, and placed into the final canvas.
+
+## 11. Deployment and operational flow
+
+```mermaid
+flowchart TD
+    Start["docker compose up -d<br/>--build --scale worker=2"]
+    Kafka["Kafka becomes healthy"]
+    Init["kafka-init runs setup_kafka.py"]
+    Topics["image_tasks + image_results"]
+    Redis["Redis becomes healthy"]
+    Master["master starts app.py"]
+    Workers["worker replicas start worker1.py"]
+    Browser["Browser uses localhost:5000"]
+
+    Start --> Kafka --> Init --> Topics
+    Start --> Redis
+    Topics --> Master
+    Topics --> Workers
+    Redis --> Master
+    Redis --> Workers
+    Master --> Browser
+```
+
+Start the system with two workers:
+
+```bash
+docker compose up -d --build --scale worker=2
+```
+
+For frontend-only changes, rebuild only the master:
+
+```bash
+docker compose up -d --build master
+```
+
+Useful commands:
+
+```bash
+docker compose ps
+docker compose logs -f master
+docker compose logs -f worker
+docker compose down
+```
+
+`docker compose down` removes containers and networks but keeps the named
+`master-data` volume. `docker compose down -v` also removes that volume and
+deletes uploads, results, and temporary tiles. Redis cache retention is governed
+by Redis persistence and eviction settings.
+
+## 12. Important functions by file
+
+### `app.py`
+
+| Function | Purpose |
+|---|---|
+| `connect_redis()` | Retries until Redis is available. |
+| `delivery_report()` | Logs Kafka delivery success or failure. |
+| `split_image_into_tiles()` | Validates the image, crops 512x512 tiles, and JPEG-encodes them. |
+| `get_file_hash()` | Computes a chunked SHA-256 hash for caching. |
+| `get_total_tiles()` | Validates a cached image and calculates its tile count. |
+| `publish_tasks()` | Publishes one tile task per Kafka message. |
+| `reconstruct_image()` | Rebuilds the final canvas, stores the cache entry, and marks the job complete. |
+| `consume_results()` | Background Kafka consumer that saves result tiles and triggers reconstruction. |
+| `upload()` | Main orchestration route, including validation and cache-hit handling. |
+| `status()` | Returns Redis-backed job progress. |
+| `result()` | Serves the completed JPEG. |
+| `health()` | Checks Redis and Kafka. |
+| `api_workers()` | Returns active workers using Redis TTL values. |
+
+When `app.py` starts, it initializes storage, connects to Redis, creates the
+Kafka producer, starts `consume_results()` in a daemon thread, and starts Flask.
+
+### `worker1.py` and `worker2.py`
+
+Both worker files implement the same pipeline:
+
+| Function | Purpose |
+|---|---|
+| `apply_transformation()` | Applies grayscale or Gaussian blur to a tile. |
+| `send_heartbeat()` | Refreshes `worker:<worker_id>` in Redis every five seconds with a 15-second TTL. |
+| `process_tasks()` | Consumes tasks, transforms tiles, and publishes results. |
+
+Task keys use `job_id:tile_id:transformation`; result keys use
+`job_id:tile_id`. Workers use the `image_workers` consumer group, so each task
+is assigned to one worker replica.
+
+### `config.py`
+
+Important settings include:
+
+| Name | Purpose |
+|---|---|
+| `TASKS_TOPIC`, `RESULTS_TOPIC` | Kafka topic names. |
+| `CONSUMER_GROUP` | Worker group name. |
+| `TILE_SIZE`, `MIN_IMAGE_SIZE` | Tiling and validation rules. |
+| `TRANSFORMATIONS` | Supported operations. |
+| `HEARTBEAT_INTERVAL`, `WORKER_TIMEOUT` | Redis liveness timing. |
+| `get_job_key()` | Builds `job:<job_id>`. |
+| `get_worker_key()` | Builds `worker:<worker_id>`. |
+| `allowed_file()` | Checks supported file extensions. |
+
+The module also creates the upload, result, and temporary-tile folders.
+
+### `storage.py`
+
+`LocalStorage` isolates filesystem operations:
+
+| Method | Purpose |
+|---|---|
+| `upload_path()` | Returns the original-upload path. |
+| `tile_folder()` / `tile_path()` | Creates and addresses temporary tiles. |
+| `result_path()` | Addresses a job result. |
+| `cleanup_tiles()` | Deletes temporary tiles after reconstruction. |
+
+### `setup_kafka.py`
+
+| Function | Purpose |
+|---|---|
+| `create_topics()` | Creates `image_tasks` with two partitions and `image_results` with one partition. |
+| `list_topics()` | Logs topics visible from Kafka. |
+
+It runs once as the `kafka-init` Compose service.
+
+### `docker-compose.yml`
+
+Defines Kafka, Kafka initialization, Redis, master, and scalable worker
+services. There is intentionally no monitor service or heartbeat Kafka topic;
+workers update Redis directly.
+
+### `Dockerfile`
+
+Builds the Python 3.11 application image, installs system and Python
+dependencies, copies the source, and creates persistent storage directories.
+
+### `templates/index.html`
+
+The home page JavaScript:
+
+| Function or handler | Purpose |
+|---|---|
+| Upload form handler | Sends `/upload` and records `cached`. |
+| `pollStatus()` | Polls `/status/<job_id>` every second. |
+| `showResult()` | Shows the image and either “Fetched from Cache!” or “Processing Complete!”. |
+| `showError()` | Displays errors. |
+| `loadWorkers()` | Refreshes the inline worker dashboard every three seconds. |
+
+### `templates/dashboard.html`
+
+The standalone dashboard's `loadWorkers()` function polls `/api/workers` and
+renders active worker cards and their TTL values.
+
+### `README.md` and `ARCHITECTURE.md`
+
+`README.md` is the quick-start guide. This document is the detailed reference
+for architecture, message contracts, cache behavior, APIs, deployment commands,
+and source-level responsibilities.
+
+## 13. Complete request flow
+
+```mermaid
+flowchart LR
+    A["Browser uploads image"] --> B["Master saves and hashes file"]
+    B --> C{"Cache hit?"}
+    C -->|Yes| D["Copy cached JPEG"]
+    D --> E["Redis status=complete"]
+    C -->|No| F["Split into tiles"]
+    F --> G["Kafka image_tasks"]
+    G --> H["Worker transforms tile"]
+    H --> I["Kafka image_results"]
+    I --> J["Master saves tile"]
+    J --> K{"All tiles done?"}
+    K -->|No| J
+    K -->|Yes| L["Reconstruct image"]
+    L --> M["Write result and cache"]
+    M --> E
+    E --> N["Browser polls status"]
+    N --> O["Browser downloads result"]
+```
+
+The system separates responsibilities cleanly: Kafka transports tile work,
+Redis stores coordination and liveness, the master owns storage and
+reconstruction, and workers perform independent image transformations.
